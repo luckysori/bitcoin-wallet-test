@@ -1,26 +1,34 @@
 use bitcoin::{
-    blockdata::transaction::TxOut,
+    consensus::deserialize,
     hashes::sha256d::Hash as TxId,
     util::psbt::serialize::{Deserialize, Serialize},
-    Address, OutPoint, Transaction,
+    Address, Transaction,
 };
-use std::str::FromStr;
+use bitcoin_wallet::{account::MasterAccount, coins::Coins};
 
-pub fn generate_block(n: u32) {
-    ureq::post("http://user:password@localhost:18443").send_json(
+// TODO: Make it so that spendable coins can be added for more than one account
+// at a time, by for example passing a`Vec<(MasterAccount, Coins)>`.
+pub fn generate_block(n: u32, master_account: &mut MasterAccount, coin_store: &mut Coins) {
+    let json_res = ureq::post("http://user:password@localhost:18443").send_json(
         ureq::json!({"jsonrpc": "1.0", "id":"grin-btc-poc", "method": "generate", "params": [n] }),
-    );
-}
+    ).into_json().unwrap();
 
-pub fn send_to_address(address: Address) -> Result<(TxOut, OutPoint), ()> {
-    let res = ureq::post("http://user:password@localhost:18443")
-        .send_json(ureq::json!({"jsonrpc": "1.0", "id":"grin-btc-poc", "method": "sendtoaddress", "params": [format!("{}", address), 1] }));
+    let blockhashes = json_res
+        .as_object()
+        .unwrap()
+        .get("result")
+        .unwrap()
+        .as_array()
+        .unwrap();
 
-    if res.ok() {
-        let txid = TxId::from_str(
-            res.into_json()
-                .unwrap()
-                .as_object()
+    for blockhash in blockhashes {
+        let res = ureq::post("http://user:password@localhost:18443").send_json(
+        ureq::json!({"jsonrpc": "1.0", "id":"grin-btc-poc", "method": "getblock", "params": [blockhash, 0] }),
+        );
+
+        let json = res.into_json().unwrap();
+        let hex = hex::decode(
+            json.as_object()
                 .unwrap()
                 .get("result")
                 .unwrap()
@@ -29,16 +37,18 @@ pub fn send_to_address(address: Address) -> Result<(TxOut, OutPoint), ()> {
         )
         .unwrap();
 
-        let raw_tx = get_rawtransaction(txid).unwrap();
-        let vout = find_vout(&raw_tx, &address).unwrap();
+        let block = deserialize(&hex).unwrap();
 
-        let txout = TxOut {
-            value: 100_000_000,
-            script_pubkey: address.script_pubkey(),
-        };
-        let outpoint = OutPoint { txid, vout };
+        coin_store.process(master_account, &block);
+    }
+}
 
-        Ok((txout, outpoint))
+pub fn send_to_address(address: Address) -> Result<(), ()> {
+    let res = ureq::post("http://user:password@localhost:18443")
+        .send_json(ureq::json!({"jsonrpc": "1.0", "id":"grin-btc-poc", "method": "sendtoaddress", "params": [format!("{}", address), 1] }));
+
+    if res.ok() {
+        Ok(())
     } else {
         Err(())
     }
@@ -77,15 +87,4 @@ pub fn get_rawtransaction(txid: TxId) -> Result<Transaction, ()> {
     } else {
         Err(())
     }
-}
-
-fn find_vout(transaction: &Transaction, to_address: &Address) -> Option<u32> {
-    let to_address_script_pubkey = to_address.script_pubkey();
-
-    transaction
-        .output
-        .iter()
-        .enumerate()
-        .find(|(_, txout)| txout.script_pubkey == to_address_script_pubkey)
-        .map(|(vout, _)| vout as u32)
 }
