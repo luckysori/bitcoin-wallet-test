@@ -1,0 +1,10 @@
+[package]
+name = "grin_btc_poc"
+version = "0.1.0"
+authors = ["Lucas Soriano del Pino <l.soriano.del.pino@gmail.com>"]
+edition = "2018"
+
+[dependencies]
+bitcoin-wallet = "1.1"
+bitcoin = "0.21"
+ureq = { version = "0.11", features = ["json"]}
