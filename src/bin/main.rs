@@ -1,9 +1,9 @@
-use bitcoin::network::constants::Network;
+use bitcoin::{network::constants::Network, Script, SigHashType, Transaction, TxIn, TxOut};
 use bitcoin_wallet::{
     account::{Account, AccountAddressType, MasterAccount, Unlocker},
     mnemonic::Mnemonic,
 };
-use grin_btc_poc::{mine_blocks, send_to_address};
+use grin_btc_poc::{generate_block, get_rawtransaction, send_rawtransaction, send_to_address};
 
 fn main() {
     const PASSPHRASE: &str = "correct horse battery staple";
@@ -30,10 +30,9 @@ fn main() {
     // create a P2WPKH (pay-to-witness-public-key-hash) (native single key segwit)
     // account. account number 1, sub-account 0 (which usually means receiver)
     // BIP32 look-ahead 10
-    let account = Account::new(&mut unlocker, AccountAddressType::P2WPKH, 1, 0, 10).unwrap();
-    master.add_account(account);
-
-    let address = master
+    let sender_account = Account::new(&mut unlocker, AccountAddressType::P2WPKH, 1, 0, 10).unwrap();
+    master.add_account(sender_account);
+    let sender_address = master
         .get_mut((1, 0))
         .unwrap()
         .next_key()
@@ -41,11 +40,62 @@ fn main() {
         .address
         .clone();
 
-    println!("Regtest address: {}", address);
+    generate_block(1);
 
-    mine_blocks(1);
+    let (txout, outpoint) = send_to_address(sender_address).unwrap();
 
-    let txid = send_to_address(address);
+    let receiver_account =
+        Account::new(&mut unlocker, AccountAddressType::P2WPKH, 2, 0, 10).unwrap();
+    master.add_account(receiver_account);
+    let receiver_address = master
+        .get_mut((2, 0))
+        .unwrap()
+        .next_key()
+        .unwrap()
+        .address
+        .clone();
 
-    println!("Transaction ID: {}", txid.unwrap());
+    let change_account = Account::new(&mut unlocker, AccountAddressType::P2WPKH, 3, 0, 10).unwrap();
+    master.add_account(change_account);
+    let change_address = master
+        .get_mut((3, 0))
+        .expect("couldn't get mut")
+        .next_key()
+        .expect("no next key")
+        .address
+        .clone();
+
+    let mut spending_transaction = Transaction {
+        input: vec![TxIn {
+            previous_output: outpoint,
+            sequence: 0xffffffff,
+            witness: Vec::new(),
+            script_sig: Script::new(),
+        }],
+        output: vec![
+            TxOut {
+                script_pubkey: receiver_address.script_pubkey(),
+                value: 50_000_000,
+            },
+            TxOut {
+                script_pubkey: change_address.script_pubkey(),
+                value: 50_000_000 - 1_000,
+            },
+        ],
+        lock_time: 0,
+        version: 2,
+    };
+
+    master
+        .sign(
+            &mut spending_transaction,
+            SigHashType::All,
+            &(|_| Some(txout.clone())),
+            &mut unlocker,
+        )
+        .expect("can not sign");
+
+    send_rawtransaction(spending_transaction.clone()).unwrap();
+
+    dbg!(get_rawtransaction(spending_transaction.txid()).unwrap());
 }
